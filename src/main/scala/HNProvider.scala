@@ -3,16 +3,17 @@ package com.p15x.hntop30
 import akka.actor.ActorSystem
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model._
+import akka.http.scaladsl.unmarshalling.Unmarshal
 import akka.stream.QueueOfferResult
 import akka.stream.scaladsl.{ Keep, Sink, Source }
 import akka.stream.{ ActorMaterializer, OverflowStrategy }
-import akka.http.scaladsl.unmarshalling.{Unmarshal, Unmarshaller}
 
+import io.circe._, io.circe.generic.auto._, io.circe.parser._, io.circe.syntax._
 import cats.data.OptionT
 import cats.implicits._
 import org.slf4j.LoggerFactory
 import scala.concurrent.{ ExecutionContext, Future, Promise }
-import scala.util.{Try, Failure, Success}
+import scala.util.{Failure, Success}
 
 trait HNProvider {
   implicit def system: ActorSystem
@@ -22,7 +23,7 @@ trait HNProvider {
   def getTopStories(n: Int): Future[List[Story]]
 }
 
-class HNProviderImpl(implicit val system: ActorSystem, val materializer: ActorMaterializer, val ec: ExecutionContext) extends HNProvider with HNProtocols {
+class HNProviderImpl(implicit val system: ActorSystem, val materializer: ActorMaterializer, val ec: ExecutionContext) extends HNProvider {
   private val log = LoggerFactory.getLogger(classOf[HNProvider])
   private val hnApiBaseUri = "/v0"
   private val pool = Http().cachedHostConnectionPoolHttps[Promise[HttpResponse]]("hacker-news.firebaseio.com")
@@ -77,11 +78,11 @@ class HNProviderImpl(implicit val system: ActorSystem, val materializer: ActorMa
     commentsOT.getOrElse(List())
   }
 
-  private def getItem[T](id: Int)(implicit u: Unmarshaller[ResponseEntity,T]): Future[Option[T]] = {
+  private def getItem[T: Decoder](id: Int): Future[Option[T]] = {
     hnRequest[T](s"item/${id}.json")
   }
 
-  private def hnRequest[T](endpoint: String)(implicit u: Unmarshaller[ResponseEntity,T]): Future[Option[T]] = {
+  private def hnRequest[T: Decoder](endpoint: String)(implicit ec: ExecutionContext, materializer: ActorMaterializer): Future[Option[T]] = {
     val promise = Promise[HttpResponse]
     val request = HttpRequest(uri = s"${hnApiBaseUri}/${endpoint}") -> promise
 
@@ -92,13 +93,14 @@ class HNProviderImpl(implicit val system: ActorSystem, val materializer: ActorMa
         case QueueOfferResult.Failure(ex) => Future.failed(ex)
         case QueueOfferResult.QueueClosed => Future.failed(new RuntimeException("Queue was closed (pool shut down) while running the request. Try again later."))
       }
-      .flatMap { r => Unmarshal(r.entity).to[T] }
-      .transform {
-        case Success(t) =>
-          Try(Some(t))
-        case Failure(e) =>
+      .flatMap { r => Unmarshal(r.entity).to[String] }
+      .map { r => decode[T](r) }
+      .map {
+        case Right(t) =>
+          Some(t)
+        case Left(e) =>
           log.error(s"couldn't deserialize $endpoint", e)
-          Try(None)
+          None
       }
   }
 
