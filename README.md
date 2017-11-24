@@ -40,7 +40,7 @@ Mac OS X and Linux should work. Windows may work, but hasn't been tested.
 
 ### Improvement 
 
-- May sometimes need tuning on akka http client buffer size on a big day.
+- May sometimes need tuning on http4s client buffer size on a big day.
 - `topstories.json` endpoint return all type of stories (job,poll,etc), it could be interesting to filter only "story".
 - More robust unit testing and better coverage
 - command line parameter parser for number of stories and number or commenters per story
@@ -53,9 +53,10 @@ sbt test
 
 ## Built With
 
-* [Scala](https://www.scala-lang.org/api/2.12.3/) - Language used
+* [scala](https://www.scala-lang.org/api/2.12.3/) - Language used
 * [sbt](https://maven.apache.org/) - Build tool
-* [akka-http](http://doc.akka.io/docs/akka-http/10.0.10/scala/http/) - Used as http client
+* [http4s](http://http4s.org/v0.18/) - Used as http client
+* [circe](https://circe.github.io/circe/) - JSON library
 * [cats](https://typelevel.org/cats/) - Lightweight library for FP
 * [scalatest](http://www.scalatest.org/) - Testing tool
 * [scalamock](http://scalamock.org/) - Scala mocking framework
