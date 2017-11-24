@@ -4,15 +4,18 @@ name := "hn-top30"
 organization := "com.p15x"
 version := "1.0"
 
+val circeVersion = "0.9.0-M2"
+val http4sVersion = "0.18.0-M5"
+
 libraryDependencies ++=  Seq(
-  "com.typesafe.akka" %% "akka-http"            % "10.0.10",
-  "com.typesafe.akka" %% "akka-stream"          % "2.5.4",
-  "com.typesafe.akka" %% "akka-actor"           % "2.5.4",
+  "org.http4s"        %% "http4s-dsl"           % http4sVersion,
+  "org.http4s"        %% "http4s-blaze-client"  % http4sVersion,
+  "org.http4s"        %% "http4s-circe"         % http4sVersion,
 
   "org.typelevel"     %% "cats-core"            % "1.0.0-RC1",
-  "io.circe"          %% "circe-core"           % "0.9.0-M2",
-  "io.circe"          %% "circe-generic"        % "0.9.0-M2",
-  "io.circe"          %% "circe-parser"         % "0.9.0-M2",
+  "io.circe"          %% "circe-core"           % circeVersion,
+  "io.circe"          %% "circe-generic"        % circeVersion,
+  "io.circe"          %% "circe-parser"         % circeVersion,
 
   "ch.qos.logback"    %  "logback-classic"      % "1.2.3",
 

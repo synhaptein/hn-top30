@@ -1,51 +1,41 @@
 package com.p15x.hntop30
 
-import akka.actor.ActorSystem
-import akka.http.scaladsl.Http
-import akka.http.scaladsl.model._
-import akka.http.scaladsl.unmarshalling.Unmarshal
-import akka.stream.QueueOfferResult
-import akka.stream.scaladsl.{ Keep, Sink, Source }
-import akka.stream.{ ActorMaterializer, OverflowStrategy }
-
-import io.circe._, io.circe.generic.auto._, io.circe.parser._, io.circe.syntax._
+import cats.effect._
 import cats.data.OptionT
 import cats.implicits._
+import org.http4s.circe._
+import org.http4s.client.blaze._
+import io.circe._, io.circe.generic.auto._
 import org.slf4j.LoggerFactory
-import scala.concurrent.{ ExecutionContext, Future, Promise }
-import scala.util.{Failure, Success}
+import scala.concurrent.{ ExecutionContext, Future }
 
 trait HNProvider {
-  implicit def system: ActorSystem
-  implicit def materializer: ActorMaterializer
   implicit def ec: ExecutionContext
 
   def getTopStories(n: Int): Future[List[Story]]
 }
 
-class HNProviderImpl(implicit val system: ActorSystem, val materializer: ActorMaterializer, val ec: ExecutionContext) extends HNProvider {
-  private val log = LoggerFactory.getLogger(classOf[HNProvider])
-  private val hnApiBaseUri = "/v0"
-  private val pool = Http().cachedHostConnectionPoolHttps[Promise[HttpResponse]]("hacker-news.firebaseio.com")
-  private val queue = Source.queue[(HttpRequest, Promise[HttpResponse])](1000, OverflowStrategy.backpressure)
-    .via(pool)
-    .toMat(Sink.foreach({
-      case ((Success(resp), p)) => p.success(resp)
-      case ((Failure(e), p)) => p.failure(e)
-    }))(Keep.left)
-    .run
+class HNProviderImpl(implicit val ec: ExecutionContext) extends HNProvider {
+  private val logger = LoggerFactory.getLogger(classOf[HNProvider])
+  private val hnApiBaseUri = "https://hacker-news.firebaseio.com/v0"
+
+  private val httpClient = PooledHttp1Client[IO](
+    maxTotalConnections = 64,
+    maxWaitQueueLimit = 1000,
+    maxConnectionsPerRequestKey = _ => 64)
 
   def getTopStories(n: Int): Future[List[Story]] = {
     hnRequest[List[Int]]("topstories.json")
       .map(_.getOrElse(List()).take(n))
       .flatMap(getStories)
+      .unsafeToFuture()
   }
 
-  private def getStories(ids: List[Int]): Future[List[Story]] = {
-    Future.sequence(ids.map(getStory)).map(_.flatten)
+  private def getStories(ids: List[Int]): IO[List[Story]] = {
+    fs2.async.parallelSequence(ids.map(getStory)).map(_.flatten)
   }
 
-  private def getStory(id: Int): Future[Option[Story]] = {
+  private def getStory(id: Int): IO[Option[Story]] = {
     val storyOT = for {
       story <- OptionT(getItem[HNStory](id))
       comments <- OptionT.liftF(getComments(story.kids.getOrElse(List())))
@@ -55,20 +45,20 @@ class HNProviderImpl(implicit val system: ActorSystem, val materializer: ActorMa
     storyOT.value
   }
 
-  private def getComments(ids: List[Int]): Future[List[Comment]] = {
-    Future.sequence(ids.map(getComment)).map(_.flatten)
+  private def getComments(ids: List[Int]): IO[List[Comment]] = {
+    fs2.async.parallelSequence(ids.map(getComment)).map(_.flatten)
   }
 
-  private def getComment(id: Int): Future[List[Comment]] = {
+  private def getComment(id: Int): IO[List[Comment]] = {
     // Remove comment without commenter as implictly deleted
     getHNComment(id).map(_.filter(_.by.isDefined).map(c => Comment(c.id, c.by.get)))
   }
 
-  private def getHNComments(ids: List[Int]): Future[List[HNComment]] = {
-    Future.sequence(ids.map(getHNComment)).map(_.flatten)
+  private def getHNComments(ids: List[Int]): IO[List[HNComment]] = {
+    fs2.async.parallelSequence(ids.map(getHNComment)).map(_.flatten)
   }
 
-  private def getHNComment(id: Int): Future[List[HNComment]] = {
+  private def getHNComment(id: Int): IO[List[HNComment]] = {
     val commentsOT = for {
       comment <- OptionT(getItem[HNComment](id))
       comments <- OptionT.liftF(getHNComments(comment.kids.getOrElse(List())))
@@ -78,33 +68,20 @@ class HNProviderImpl(implicit val system: ActorSystem, val materializer: ActorMa
     commentsOT.getOrElse(List())
   }
 
-  private def getItem[T: Decoder](id: Int): Future[Option[T]] = {
+  private def getItem[T: Decoder](id: Int): IO[Option[T]] = {
     hnRequest[T](s"item/${id}.json")
   }
 
-  private def hnRequest[T: Decoder](endpoint: String)(implicit ec: ExecutionContext, materializer: ActorMaterializer): Future[Option[T]] = {
-    val promise = Promise[HttpResponse]
-    val request = HttpRequest(uri = s"${hnApiBaseUri}/${endpoint}") -> promise
-
-    queue.offer(request)
-      .flatMap{
-        case QueueOfferResult.Enqueued    => promise.future
-        case QueueOfferResult.Dropped     => Future.failed(new RuntimeException("Queue overflowed. Try again later."))
-        case QueueOfferResult.Failure(ex) => Future.failed(ex)
-        case QueueOfferResult.QueueClosed => Future.failed(new RuntimeException("Queue was closed (pool shut down) while running the request. Try again later."))
-      }
-      .flatMap { r => Unmarshal(r.entity).to[String] }
-      .map { r => decode[T](r) }
-      .map {
-        case Right(t) =>
-          Some(t)
-        case Left(e) =>
-          log.error(s"couldn't deserialize $endpoint", e)
-          None
+  private def hnRequest[T: Decoder](endpoint: String): IO[Option[T]] = {
+    httpClient.expect(s"${hnApiBaseUri}/${endpoint}")(jsonOf[IO, T])
+      .map(_.some)
+      .recover { case e: Throwable =>
+        logger.error(s"Could not deserialize response on $endpoint", e)
+        None
       }
   }
 
-  def shutdown = Http().shutdownAllConnectionPools()
+  def shutdown = httpClient.shutdownNow()
 }
 
 case class HNStory(id: Int, title: String, kids: Option[List[Int]])

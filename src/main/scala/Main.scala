@@ -1,14 +1,10 @@
 package com.p15x.hntop30
 
 import scala.concurrent.Await
-import akka.stream.ActorMaterializer
-import akka.actor.ActorSystem
 import scala.concurrent.duration._
-import scala.concurrent.ExecutionContext.Implicits.global
 
 object Main extends App {
-  implicit val system = ActorSystem()
-  implicit val materializer = ActorMaterializer()
+  implicit val ec = scala.concurrent.ExecutionContext.global
 
   val hnProvider = new HNProviderImpl
   val storyService = new StoryServiceImpl(hnProvider)
@@ -31,9 +27,6 @@ object Main extends App {
     println(table)
   }
   finally {
-    hnProvider.shutdown.map { _ =>
-      system.terminate()
-      Await.result(system.whenTerminated, 3 seconds)
-    }
+    hnProvider.shutdown
   }
 }
